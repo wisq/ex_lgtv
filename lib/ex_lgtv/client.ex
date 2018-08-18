@@ -8,6 +8,7 @@ defmodule ExLgtv.Client do
       socket: nil,
       socket_state: nil,
       pointer_socket: nil,
+      pointer_ready: false,
       client_key: nil,
       command_id: 1,
       subscribers: MapSet.new(),
@@ -29,8 +30,8 @@ defmodule ExLgtv.Client do
     GenServer.call(pid, {:command, uri, payload})
   end
 
-  def cast_pointer(pid, payload) do
-    GenServer.cast(pid, {:pointer, payload})
+  def call_pointer(pid, payload) do
+    GenServer.call(pid, {:pointer, payload})
   end
 
   @impl true
@@ -54,6 +55,32 @@ defmodule ExLgtv.Client do
   end
 
   @impl true
+  def handle_info({:socket_disconnect, pid}, state) do
+    ^pid = state.socket
+    {:noreply, %State{state | socket_state: :offline}}
+  end
+
+  @impl true
+  def handle_info({:pointer_connect, pid}, state) do
+    if pid == state.pointer_socket do
+      IO.puts("pointer ready")
+      {:noreply, %State{state | pointer_ready: true}}
+    else
+      {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:pointer_disconnect, pid}, state) do
+    if pid == state.pointer_socket do
+      IO.puts("pointer lost")
+      {:noreply, %State{state | pointer_ready: false}}
+    else
+      {:noreply, state}
+    end
+  end
+
+  @impl true
   def handle_info({:socket_receive, pid, type, id, payload}, state) do
     ^pid = state.socket
     handle_receive(type, id, payload, state)
@@ -68,24 +95,27 @@ defmodule ExLgtv.Client do
   end
 
   @impl true
-  def handle_cast({:pointer, payload}, state) do
-    IO.inspect({:cast, state.pointer_socket, payload})
-
-    if is_pid(state.pointer_socket) do
-      Socket.Pointer.cast(state.pointer_socket, payload)
-    end
-
-    {:noreply, state}
+  def handle_call({:pointer, payload}, _from, state) do
+    {:reply, send_pointer(state, payload), state}
   end
 
-  defp send_command(%{socket_state: :ready} = state, uri, payload, reply_to) do
+  defp send_command(%State{socket_state: :ready} = state, uri, payload, reply_to) do
     {command_id, state} = register_next_command_id(state, reply_to)
     Socket.Main.cast_request(state.socket, command_id, uri, payload)
     {:ok, state}
   end
 
-  defp send_command(state, _uri, _payload, _reply_to) do
-    {:error, state.socket_state}
+  defp send_command(%State{socket_state: ss}, _uri, _payload, _reply_to) do
+    {:error, "Socket state is #{inspect(ss)}"}
+  end
+
+  defp send_pointer(%State{pointer_socket: pid, pointer_ready: true}, payload) do
+    Socket.Pointer.cast(pid, payload)
+    {:ok, nil}
+  end
+
+  defp send_pointer(%State{}, _payload) do
+    {:error, "Pointer is down"}
   end
 
   defp register_next_command_id(state, reply_to) do
@@ -128,9 +158,13 @@ defmodule ExLgtv.Client do
   end
 
   defp handle_pointer_socket(%{"socketPath" => uri}, state) do
-    {:ok, pid} = Socket.Pointer.start_link(uri)
+    if state.pointer_socket do
+      Socket.Pointer.close(state.pointer_socket)
+    end
+
+    {:ok, pid} = Socket.Pointer.start_link(uri, self())
     IO.inspect({"socketPath", uri, pid})
-    {:noreply, %State{state | pointer_socket: pid}}
+    {:noreply, %State{state | pointer_socket: pid, pointer_ready: false}}
   end
 
   defp internal_command(state, uri, payload, callback) do
