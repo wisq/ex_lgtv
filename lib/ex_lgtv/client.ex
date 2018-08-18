@@ -14,7 +14,84 @@ defmodule ExLgtv.Client do
     )
   end
 
-  def handshake_payload(nil) do
+  def start_link(ip, opts) do
+    URI.default_port("ws", 3000)
+    uri = URI.parse("ws://#{ip}")
+
+    client_key = Keyword.get(opts, :client_key)
+    subscribers = Keyword.get(opts, :subscribers, []) |> MapSet.new()
+
+    GenServer.start_link(__MODULE__, {uri, client_key, subscribers})
+  end
+
+  def command(pid, uri, payload) do
+    GenServer.call(pid, {:command, uri, payload})
+  end
+
+  @impl true
+  def init({uri, client_key, subscribers}) do
+    {:ok, socket} = Socket.start_link(uri, self())
+
+    {:ok,
+     %State{
+       socket: socket,
+       socket_state: :connecting,
+       client_key: client_key,
+       subscribers: subscribers
+     }}
+  end
+
+  @impl true
+  def handle_info({:socket_connect, pid}, state) do
+    ^pid = state.socket
+    Socket.cast_register(state.socket, "reg0", handshake_payload(state.client_key))
+    {:noreply, %State{state | socket_state: :registering}}
+  end
+
+  @impl true
+  def handle_info({:socket_receive, pid, type, id, payload}, state) do
+    ^pid = state.socket
+    handle_receive(type, id, payload, state)
+  end
+
+  @impl true
+  def handle_call({:command, uri, payload}, from, state) do
+    case state.socket_state do
+      :ready ->
+        {command_id, state} = register_next_command_id(state, from)
+        Socket.cast_request(state.socket, command_id, uri, payload)
+        {:noreply, state}
+
+      other ->
+        {:reply, {:error, other}, state}
+    end
+  end
+
+  defp register_next_command_id(state, from) do
+    id = state.command_id
+    pending = Map.put(state.pending, id, from)
+    state = %State{state | command_id: id + 1, pending: pending}
+    {id, state}
+  end
+
+  defp handle_receive("registered", _id, %{"client-key" => client_key}, state) do
+    IO.inspect({"connected", state.client_key, client_key})
+    {:noreply, %State{state | socket_state: :ready, client_key: client_key}}
+  end
+
+  defp handle_receive("response", "reg0", %{"pairingType" => "PROMPT"}, state) do
+    IO.inspect({"prompting"})
+    {:noreply, %State{state | socket_state: :prompting}}
+  end
+
+  defp handle_receive("response", command_id, payload, state) do
+    {from, pending} = Map.pop(state.pending, command_id)
+    IO.inspect({"response", command_id})
+    GenServer.reply(from, {:ok, payload})
+    {:noreply, %State{state | pending: pending}}
+  end
+
+  defp handshake_payload(nil) do
     %{
       forcePairing: false,
       pairingType: "PROMPT",
@@ -61,61 +138,8 @@ defmodule ExLgtv.Client do
     }
   end
 
-  def handshake_payload(client_key) when is_bitstring(client_key) do
+  defp handshake_payload(client_key) when is_bitstring(client_key) do
     handshake_payload(nil)
     |> Map.put(:"client-key", client_key)
-  end
-
-  def start_link(ip, opts) do
-    URI.default_port("ws", 3000)
-    uri = URI.parse("ws://#{ip}")
-
-    client_key = Keyword.get(opts, :client_key)
-    subscribers = Keyword.get(opts, :subscribers, []) |> MapSet.new()
-
-    GenServer.start_link(__MODULE__, {uri, client_key, subscribers})
-  end
-
-  @impl true
-  def init({uri, client_key, subscribers}) do
-    {:ok, socket} = Socket.start_link(uri, self())
-
-    {:ok,
-     %State{
-       socket: socket,
-       socket_state: :connecting,
-       client_key: client_key,
-       subscribers: subscribers
-     }}
-  end
-
-  defp socket_send(socket, type, id, uri, payload) do
-    Socket.cast(
-      socket,
-      %{
-        type: type,
-        id: id,
-        uri: uri,
-        payload: payload
-      }
-    )
-  end
-
-  @impl true
-  def handle_info({:socket_connect, pid}, state) do
-    payload = handshake_payload(state.client_key)
-    socket_send(pid, "register", "reg0", nil, payload)
-
-    {:noreply, %State{state | socket_state: :registering}}
-  end
-
-  @impl true
-  def handle_info(
-        {:socket_receive, _pid,
-         %{"type" => "registered", "payload" => %{"client-key" => client_key}}},
-        state
-      ) do
-    IO.inspect({"connected", state.client_key == client_key})
-    {:noreply, %State{state | socket_state: :ready, client_key: client_key}}
   end
 end

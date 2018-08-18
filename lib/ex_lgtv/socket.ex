@@ -5,8 +5,29 @@ defmodule ExLgtv.Socket do
     WebSockex.start_link(url, __MODULE__, parent, async: true)
   end
 
-  def cast(pid, data) do
-    WebSockex.cast(pid, {:send, data})
+  def cast_register(pid, id, payload) do
+    WebSockex.cast(
+      pid,
+      {:send,
+       %{
+         type: "register",
+         id: id,
+         payload: payload
+       }}
+    )
+  end
+
+  def cast_request(pid, id, uri, payload) do
+    WebSockex.cast(
+      pid,
+      {:send,
+       %{
+         type: "request",
+         id: id,
+         uri: uri,
+         payload: payload
+       }}
+    )
   end
 
   @impl true
@@ -24,7 +45,12 @@ defmodule ExLgtv.Socket do
   @impl true
   def handle_frame({:text, json}, parent) do
     {:ok, data} = Poison.decode(json)
-    send(parent, {:socket_receive, self(), data})
+
+    type = Map.fetch!(data, "type")
+    id = Map.fetch!(data, "id")
+    payload = Map.fetch!(data, "payload")
+
+    send(parent, {:socket_receive, self(), type, id, payload})
     {:ok, parent}
   end
 
