@@ -7,6 +7,7 @@ defmodule ExLgtv.Client do
     defstruct(
       socket: nil,
       socket_state: nil,
+      pointer_socket: nil,
       client_key: nil,
       command_id: 1,
       subscribers: MapSet.new(),
@@ -24,13 +25,17 @@ defmodule ExLgtv.Client do
     GenServer.start_link(__MODULE__, {uri, client_key, subscribers})
   end
 
-  def command(pid, uri, payload) do
+  def call_command(pid, uri, payload) do
     GenServer.call(pid, {:command, uri, payload})
+  end
+
+  def cast_pointer(pid, payload) do
+    GenServer.cast(pid, {:pointer, payload})
   end
 
   @impl true
   def init({uri, client_key, subscribers}) do
-    {:ok, socket} = Socket.start_link(uri, self())
+    {:ok, socket} = Socket.Main.start_link(uri, self())
 
     {:ok,
      %State{
@@ -44,7 +49,7 @@ defmodule ExLgtv.Client do
   @impl true
   def handle_info({:socket_connect, pid}, state) do
     ^pid = state.socket
-    Socket.cast_register(state.socket, "reg0", handshake_payload(state.client_key))
+    Socket.Main.cast_register(state.socket, "reg0", handshake_payload(state.client_key))
     {:noreply, %State{state | socket_state: :registering}}
   end
 
@@ -56,27 +61,51 @@ defmodule ExLgtv.Client do
 
   @impl true
   def handle_call({:command, uri, payload}, from, state) do
-    case state.socket_state do
-      :ready ->
-        {command_id, state} = register_next_command_id(state, from)
-        Socket.cast_request(state.socket, command_id, uri, payload)
-        {:noreply, state}
-
-      other ->
-        {:reply, {:error, other}, state}
+    case send_command(state, uri, payload, {:reply, from}) do
+      {:ok, new_state} -> {:noreply, new_state}
+      {:error, error} -> {:reply, {:error, error}, state}
     end
   end
 
-  defp register_next_command_id(state, from) do
+  @impl true
+  def handle_cast({:pointer, payload}, state) do
+    IO.inspect({:cast, state.pointer_socket, payload})
+
+    if is_pid(state.pointer_socket) do
+      Socket.Pointer.cast(state.pointer_socket, payload)
+    end
+
+    {:noreply, state}
+  end
+
+  defp send_command(%{socket_state: :ready} = state, uri, payload, reply_to) do
+    {command_id, state} = register_next_command_id(state, reply_to)
+    Socket.Main.cast_request(state.socket, command_id, uri, payload)
+    {:ok, state}
+  end
+
+  defp send_command(state, _uri, _payload, _reply_to) do
+    {:error, state.socket_state}
+  end
+
+  defp register_next_command_id(state, reply_to) do
     id = state.command_id
-    pending = Map.put(state.pending, id, from)
+    pending = Map.put(state.pending, id, reply_to)
     state = %State{state | command_id: id + 1, pending: pending}
     {id, state}
   end
 
   defp handle_receive("registered", _id, %{"client-key" => client_key}, state) do
     IO.inspect({"connected", state.client_key, client_key})
-    {:noreply, %State{state | socket_state: :ready, client_key: client_key}}
+
+    state =
+      %State{state | socket_state: :ready, client_key: client_key}
+      |> internal_command!(
+        "ssap://com.webos.service.networkinput/getPointerInputSocket",
+        &handle_pointer_socket/2
+      )
+
+    {:noreply, state}
   end
 
   defp handle_receive("response", "reg0", %{"pairingType" => "PROMPT"}, state) do
@@ -85,10 +114,32 @@ defmodule ExLgtv.Client do
   end
 
   defp handle_receive("response", command_id, payload, state) do
-    {from, pending} = Map.pop(state.pending, command_id)
-    IO.inspect({"response", command_id})
-    GenServer.reply(from, {:ok, payload})
-    {:noreply, %State{state | pending: pending}}
+    {reply_to, pending} = Map.pop(state.pending, command_id)
+    IO.inspect({"response", command_id, reply_to})
+
+    case reply_to do
+      {:internal, callback} ->
+        callback.(payload, state)
+
+      {:reply, from} ->
+        GenServer.reply(from, {:ok, payload})
+        {:noreply, %State{state | pending: pending}}
+    end
+  end
+
+  defp handle_pointer_socket(%{"socketPath" => uri}, state) do
+    {:ok, pid} = Socket.Pointer.start_link(uri)
+    IO.inspect({"socketPath", uri, pid})
+    {:noreply, %State{state | pointer_socket: pid}}
+  end
+
+  defp internal_command(state, uri, payload, callback) do
+    send_command(state, uri, payload, {:internal, callback})
+  end
+
+  defp internal_command!(state, uri, payload \\ %{}, callback) do
+    {:ok, state} = internal_command(state, uri, payload, callback)
+    state
   end
 
   defp handshake_payload(nil) do

@@ -1,8 +1,8 @@
-defmodule ExLgtv.Socket do
+defmodule ExLgtv.Socket.Main do
   use WebSockex
 
-  def start_link(url, parent) do
-    WebSockex.start_link(url, __MODULE__, parent, async: true)
+  def start_link(uri, parent) do
+    WebSockex.start_link(uri, __MODULE__, parent, async: true)
   end
 
   def cast_register(pid, id, payload) do
