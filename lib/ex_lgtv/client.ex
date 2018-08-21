@@ -183,7 +183,7 @@ defmodule ExLgtv.Client do
         {:noreply, %State{state | pending: pending}}
 
       {:subscription, token, pid} ->
-        # Ongoing subscription: Send payload, leave state.pending unchanged.
+        # Ongoing subscription: Send to target, leave state.pending unchanged.
         if {:ok, payload} = response do
           send(pid, {token, payload})
         end
@@ -191,11 +191,12 @@ defmodule ExLgtv.Client do
         {:noreply, state}
 
       {:subscription, token, pid, from} ->
+        # New subscription: Send to target ...
         if {:ok, payload} = response do
           send(pid, {token, payload})
         end
 
-        # New subscription: Reply once to satisfy the call ...
+        # ... reply once to satisfy the call ...
         GenServer.reply(from, response)
         # ... then switch to an "ongoing" subscription, above.
         pending = Map.put(pending, command_id, {:subscription, token, pid})
