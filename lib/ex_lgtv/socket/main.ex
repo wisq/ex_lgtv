@@ -5,42 +5,20 @@ defmodule ExLgtv.Socket.Main do
     WebSockex.start_link(uri, __MODULE__, parent, async: true)
   end
 
-  def cast_register(pid, id, payload) do
-    WebSockex.cast(
-      pid,
-      {:send,
-       %{
-         type: "register",
-         id: id,
-         payload: payload
-       }}
-    )
+  def register(pid, id, payload) do
+    cast_send(pid, %{type: :register, id: id, payload: payload})
   end
 
-  def cast_request(pid, id, uri, payload) do
-    WebSockex.cast(
-      pid,
-      {:send,
-       %{
-         type: "request",
-         id: id,
-         uri: uri,
-         payload: payload
-       }}
-    )
+  def request(pid, id, uri, payload) do
+    cast_send(pid, %{type: :request, id: id, uri: uri, payload: payload})
   end
 
-  def cast_subscribe(pid, id, uri, payload) do
-    WebSockex.cast(
-      pid,
-      {:send,
-       %{
-         type: "subscribe",
-         id: id,
-         uri: uri,
-         payload: payload
-       }}
-    )
+  def subscribe(pid, id, uri, payload) do
+    cast_send(pid, %{type: :subscribe, id: id, uri: uri, payload: payload})
+  end
+
+  defp cast_send(pid, params) do
+    WebSockex.cast(pid, {:send, params})
   end
 
   @impl true

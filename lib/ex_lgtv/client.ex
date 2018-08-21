@@ -52,9 +52,30 @@ defmodule ExLgtv.Client do
   end
 
   @impl true
+  def handle_call({:command, uri, payload}, from, state) do
+    case send_main(:request, state, uri, payload, {:reply, from}) do
+      {:ok, new_state} -> {:noreply, new_state}
+      {:error, error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:subscribe, token, pid, uri, payload}, from, state) do
+    case send_main(:subscribe, state, uri, payload, {:subscription, token, pid, from}) do
+      {:ok, new_state} -> {:noreply, new_state}
+      {:error, error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:pointer, payload}, _from, state) do
+    {:reply, send_pointer(state, payload), state}
+  end
+
+  @impl true
   def handle_info({:socket_connect, pid}, state) do
     ^pid = state.socket
-    Socket.Main.cast_register(state.socket, "reg0", handshake_payload(state.client_key))
+    Socket.Main.register(state.socket, "reg0", handshake_payload(state.client_key))
     {:noreply, %State{state | socket_state: :registering}}
   end
 
@@ -90,51 +111,37 @@ defmodule ExLgtv.Client do
     handle_receive(type, id, payload, state)
   end
 
-  @impl true
-  def handle_call({:command, uri, payload}, from, state) do
-    case send_main(:request, state, uri, payload, {:reply, from}) do
-      {:ok, new_state} -> {:noreply, new_state}
-      {:error, error} -> {:reply, {:error, error}, state}
-    end
-  end
-
-  @impl true
-  def handle_call({:subscribe, token, pid, uri, payload}, from, state) do
-    case send_main(:subscribe, state, uri, payload, {:subscription, token, pid, from}) do
-      {:ok, new_state} -> {:noreply, new_state}
-      {:error, error} -> {:reply, {:error, error}, state}
-    end
-  end
-
-  @impl true
-  def handle_call({:pointer, payload}, _from, state) do
-    {:reply, send_pointer(state, payload), state}
-  end
-
+  # Send a request to the main socket.
+  # This generates and registers a new command ID, then sends it.
   defp send_main(mode, %State{socket_state: :ready} = state, uri, payload, reply_to) do
     {command_id, state} = register_next_command_id(state, reply_to)
 
     case mode do
-      :request -> Socket.Main.cast_request(state.socket, command_id, uri, payload)
-      :subscribe -> Socket.Main.cast_subscribe(state.socket, command_id, uri, payload)
+      :request -> Socket.Main.request(state.socket, command_id, uri, payload)
+      :subscribe -> Socket.Main.subscribe(state.socket, command_id, uri, payload)
     end
 
     {:ok, state}
   end
 
+  # If the socket isn't ready, return an error immediately,
+  # without registering anything.
   defp send_main(_mode, %State{socket_state: ss}, _uri, _payload, _reply_to) do
     {:error, "Socket state is #{inspect(ss)}"}
   end
 
-  defp send_pointer(%State{pointer_socket: pid, pointer_ready: true}, payload) do
-    Socket.Pointer.cast(pid, payload)
-    {:ok, nil}
+  # Send a pointer event, on the separate pointer socket.
+  defp send_pointer(state, payload) do
+    if state.pointer_ready do
+      Socket.Pointer.cast(state.pointer_socket, payload)
+      {:ok, nil}
+    else
+      {:error, :pointer_not_ready}
+    end
   end
 
-  defp send_pointer(%State{}, _payload) do
-    {:error, "Pointer is down"}
-  end
-
+  # Pick the next command ID, then increment it.
+  # Stick the reply_to into state.pending.
   defp register_next_command_id(state, reply_to) do
     id = state.command_id
     pending = Map.put(state.pending, id, reply_to)
@@ -142,6 +149,20 @@ defmodule ExLgtv.Client do
     {id, state}
   end
 
+  # Dispatch an internal command, with a callback to process the result.
+  defp internal_command(state, uri, payload, callback) do
+    send_main(:request, state, uri, payload, {:internal, callback})
+  end
+
+  # Bang version, to make for easier pipelining.
+  defp internal_command!(state, uri, payload \\ %{}, callback) do
+    {:ok, state} = internal_command(state, uri, payload, callback)
+    state
+  end
+
+  # Handle various types of messages received over the socket.
+  #
+  # The initial registration event, once pairing is complete:
   defp handle_receive("registered", _id, %{"client-key" => client_key}, state) do
     IO.inspect({"connected", state.client_key, client_key})
 
@@ -155,19 +176,44 @@ defmodule ExLgtv.Client do
     {:noreply, state}
   end
 
+  # A response to our "reg0" event, indicating that confirmation is required:
   defp handle_receive("response", "reg0", %{"pairingType" => "PROMPT"}, state) do
     IO.inspect({"prompting"})
     {:noreply, %State{state | socket_state: :prompting}}
   end
 
+  # A positive response to a standard command:
   defp handle_receive("response", command_id, payload, state) do
     dispatch_response(command_id, {:ok, payload}, state)
   end
 
+  # An error with a standard command:
   defp handle_receive("error", command_id, payload, state) do
     dispatch_response(command_id, {:error, payload}, state)
   end
 
+  # Determine who a response should be sent to,
+  # then send it to them.
+  #
+  # There are currently four different types:
+  #
+  # {:internal, callback} ->
+  #   A response to a special command internal to this module.
+  #   `callback` is a function that accepts the response.
+  #
+  # {:reply, from} ->
+  #   A standard `call`-style command.
+  #   We use `GenServer.reply` to reply to `from`.
+  #
+  # {:subscription, token, pid} ->
+  #   An ongoing subscription.  Send `{token, payload}` to `pid`.
+  #
+  # {:subscription, token, pid, from} ->
+  #   A new subscription.  In addition to the above behaviour,
+  #   also use `GenServer.reply`, then remove `from`.
+  #
+  # TODO: Refactor into a list?  So the last case becomes a
+  # combination of `{:subscription, token, pid}` and `{:reply, from}`.
   defp dispatch_response(command_id, response, state) do
     {reply_to, pending} = Map.pop(state.pending, command_id)
     IO.inspect({"response", command_id, reply_to})
@@ -204,6 +250,9 @@ defmodule ExLgtv.Client do
     end
   end
 
+  # Internal callback for a `getPointerInputSocket` call.
+  # This sets up the pointer socket once we have a URI for it.
+  # Issued once registration is complete.
   defp handle_pointer_socket({:ok, %{"socketPath" => uri}}, state) do
     if state.pointer_socket do
       Socket.Pointer.close(state.pointer_socket)
@@ -214,15 +263,8 @@ defmodule ExLgtv.Client do
     {:noreply, %State{state | pointer_socket: pid, pointer_ready: false}}
   end
 
-  defp internal_command(state, uri, payload, callback) do
-    send_main(:request, state, uri, payload, {:internal, callback})
-  end
-
-  defp internal_command!(state, uri, payload \\ %{}, callback) do
-    {:ok, state} = internal_command(state, uri, payload, callback)
-    state
-  end
-
+  # Generate the initial handshake payload.
+  # This version is without an initial client key:
   defp handshake_payload(nil) do
     %{
       forcePairing: false,
@@ -270,6 +312,7 @@ defmodule ExLgtv.Client do
     }
   end
 
+  # This version adds an existing client key to the handshake:
   defp handshake_payload(client_key) when is_bitstring(client_key) do
     handshake_payload(nil)
     |> Map.put(:"client-key", client_key)
