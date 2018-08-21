@@ -161,35 +161,49 @@ defmodule ExLgtv.Client do
   end
 
   defp handle_receive("response", command_id, payload, state) do
+    dispatch_response(command_id, {:ok, payload}, state)
+  end
+
+  defp handle_receive("error", command_id, payload, state) do
+    dispatch_response(command_id, {:error, payload}, state)
+  end
+
+  defp dispatch_response(command_id, response, state) do
     {reply_to, pending} = Map.pop(state.pending, command_id)
     IO.inspect({"response", command_id, reply_to})
 
     case reply_to do
       {:internal, callback} ->
         # Internal command: Run the callback, leave state.pending unchanged.
-        callback.(payload, state)
+        callback.(response, state)
 
       {:reply, from} ->
         # External command: Reply, and drop from state.pending.
-        GenServer.reply(from, {:ok, payload})
+        GenServer.reply(from, response)
         {:noreply, %State{state | pending: pending}}
 
       {:subscription, token, pid} ->
         # Ongoing subscription: Send payload, leave state.pending unchanged.
-        send(pid, {token, payload})
+        if {:ok, payload} = response do
+          send(pid, {token, payload})
+        end
+
         {:noreply, state}
 
       {:subscription, token, pid, from} ->
-        send(pid, {token, payload})
+        if {:ok, payload} = response do
+          send(pid, {token, payload})
+        end
+
         # New subscription: Reply once to satisfy the call ...
-        GenServer.reply(from, {:ok, payload})
+        GenServer.reply(from, response)
         # ... then switch to an "ongoing" subscription, above.
         pending = Map.put(pending, command_id, {:subscription, token, pid})
         {:noreply, %State{state | pending: pending}}
     end
   end
 
-  defp handle_pointer_socket(%{"socketPath" => uri}, state) do
+  defp handle_pointer_socket({:ok, %{"socketPath" => uri}}, state) do
     if state.pointer_socket do
       Socket.Pointer.close(state.pointer_socket)
     end
