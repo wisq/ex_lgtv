@@ -200,6 +200,7 @@ defmodule ExLgtv.Client do
   # {:internal, callback} ->
   #   A response to a special command internal to this module.
   #   `callback` is a function that accepts the response.
+  #   It should return a `{:noreply, state}` return value directly.
   #
   # {:reply, from} ->
   #   A standard `call`-style command.
@@ -212,8 +213,6 @@ defmodule ExLgtv.Client do
   #   A new subscription.  In addition to the above behaviour,
   #   also use `GenServer.reply`, then remove `from`.
   #
-  # TODO: Refactor into a list?  So the last case becomes a
-  # combination of `{:subscription, token, pid}` and `{:reply, from}`.
   defp dispatch_response(command_id, response, state) do
     {reply_to, pending} = Map.pop(state.pending, command_id)
     IO.inspect({"response", command_id, reply_to})
