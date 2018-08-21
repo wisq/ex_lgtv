@@ -34,6 +34,10 @@ defmodule ExLgtv.Client do
     GenServer.call(pid, {:pointer, payload})
   end
 
+  def subscribe(pid, token, uri, payload) do
+    GenServer.call(pid, {:subscribe, token, self(), uri, payload})
+  end
+
   @impl true
   def init({uri, client_key, subscribers}) do
     {:ok, socket} = Socket.Main.start_link(uri, self())
@@ -88,7 +92,15 @@ defmodule ExLgtv.Client do
 
   @impl true
   def handle_call({:command, uri, payload}, from, state) do
-    case send_command(state, uri, payload, {:reply, from}) do
+    case send_main(:request, state, uri, payload, {:reply, from}) do
+      {:ok, new_state} -> {:noreply, new_state}
+      {:error, error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:subscribe, token, pid, uri, payload}, from, state) do
+    case send_main(:subscribe, state, uri, payload, {:subscription, token, pid, from}) do
       {:ok, new_state} -> {:noreply, new_state}
       {:error, error} -> {:reply, {:error, error}, state}
     end
@@ -99,13 +111,18 @@ defmodule ExLgtv.Client do
     {:reply, send_pointer(state, payload), state}
   end
 
-  defp send_command(%State{socket_state: :ready} = state, uri, payload, reply_to) do
+  defp send_main(mode, %State{socket_state: :ready} = state, uri, payload, reply_to) do
     {command_id, state} = register_next_command_id(state, reply_to)
-    Socket.Main.cast_request(state.socket, command_id, uri, payload)
+
+    case mode do
+      :request -> Socket.Main.cast_request(state.socket, command_id, uri, payload)
+      :subscribe -> Socket.Main.cast_subscribe(state.socket, command_id, uri, payload)
+    end
+
     {:ok, state}
   end
 
-  defp send_command(%State{socket_state: ss}, _uri, _payload, _reply_to) do
+  defp send_main(_mode, %State{socket_state: ss}, _uri, _payload, _reply_to) do
     {:error, "Socket state is #{inspect(ss)}"}
   end
 
@@ -149,10 +166,25 @@ defmodule ExLgtv.Client do
 
     case reply_to do
       {:internal, callback} ->
+        # Internal command: Run the callback, leave state.pending unchanged.
         callback.(payload, state)
 
       {:reply, from} ->
+        # External command: Reply, and drop from state.pending.
         GenServer.reply(from, {:ok, payload})
+        {:noreply, %State{state | pending: pending}}
+
+      {:subscription, token, pid} ->
+        # Ongoing subscription: Send payload, leave state.pending unchanged.
+        send(pid, {token, payload})
+        {:noreply, state}
+
+      {:subscription, token, pid, from} ->
+        send(pid, {token, payload})
+        # New subscription: Reply once to satisfy the call ...
+        GenServer.reply(from, {:ok, payload})
+        # ... then switch to an "ongoing" subscription, above.
+        pending = Map.put(pending, command_id, {:subscription, token, pid})
         {:noreply, %State{state | pending: pending}}
     end
   end
@@ -168,7 +200,7 @@ defmodule ExLgtv.Client do
   end
 
   defp internal_command(state, uri, payload, callback) do
-    send_command(state, uri, payload, {:internal, callback})
+    send_main(:request, state, uri, payload, {:internal, callback})
   end
 
   defp internal_command!(state, uri, payload \\ %{}, callback) do

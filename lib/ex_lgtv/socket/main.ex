@@ -30,6 +30,19 @@ defmodule ExLgtv.Socket.Main do
     )
   end
 
+  def cast_subscribe(pid, id, uri, payload) do
+    WebSockex.cast(
+      pid,
+      {:send,
+       %{
+         type: "subscribe",
+         id: id,
+         uri: uri,
+         payload: payload
+       }}
+    )
+  end
+
   @impl true
   def handle_connect(_conn, parent) do
     send(parent, {:socket_connect, self()})
