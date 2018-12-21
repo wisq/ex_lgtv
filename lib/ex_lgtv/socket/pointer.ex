@@ -16,7 +16,6 @@ defmodule ExLgtv.Socket.Pointer do
   @impl true
   def handle_connect(_conn, parent) do
     send(parent, {:pointer_connect, self()})
-    IO.puts("pointer connected")
     {:ok, parent}
   end
 

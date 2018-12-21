@@ -1,10 +1,12 @@
 defmodule ExLgtv.Client do
   use GenServer
-  alias ExLgtv.Socket
+  require Logger
+  alias ExLgtv.{Socket, KeyStore}
 
   defmodule State do
-    @enforce_keys [:socket, :socket_state, :client_key, :subscribers]
+    @enforce_keys [:uri, :socket, :socket_state, :client_key]
     defstruct(
+      uri: nil,
       socket: nil,
       socket_state: nil,
       pointer_socket: nil,
@@ -16,14 +18,11 @@ defmodule ExLgtv.Client do
     )
   end
 
-  def start_link(ip, opts) do
+  def start_link(ip) do
     URI.default_port("ws", 3000)
     uri = URI.parse("ws://#{ip}")
 
-    client_key = Keyword.get(opts, :client_key)
-    subscribers = Keyword.get(opts, :subscribers, []) |> MapSet.new()
-
-    GenServer.start_link(__MODULE__, {uri, client_key, subscribers})
+    GenServer.start_link(__MODULE__, uri)
   end
 
   def call_command(pid, uri, payload) do
@@ -39,15 +38,16 @@ defmodule ExLgtv.Client do
   end
 
   @impl true
-  def init({uri, client_key, subscribers}) do
+  def init(uri) do
+    Logger.info("Connecting to LGTV at #{uri} ...")
     {:ok, socket} = Socket.Main.start_link(uri, self())
 
     {:ok,
      %State{
+       uri: uri,
        socket: socket,
        socket_state: :connecting,
-       client_key: client_key,
-       subscribers: subscribers
+       client_key: KeyStore.get(uri)
      }}
   end
 
@@ -88,7 +88,7 @@ defmodule ExLgtv.Client do
   @impl true
   def handle_info({:pointer_connect, pid}, state) do
     if pid == state.pointer_socket do
-      IO.puts("pointer ready")
+      Logger.info("Pointer socket connected.")
       {:noreply, %State{state | pointer_ready: true}}
     else
       {:noreply, state}
@@ -98,7 +98,7 @@ defmodule ExLgtv.Client do
   @impl true
   def handle_info({:pointer_disconnect, pid}, state) do
     if pid == state.pointer_socket do
-      IO.puts("pointer lost")
+      Logger.info("Lost connection to pointer socket.")
       {:noreply, %State{state | pointer_ready: false}}
     else
       {:noreply, state}
@@ -164,7 +164,12 @@ defmodule ExLgtv.Client do
   #
   # The initial registration event, once pairing is complete:
   defp handle_receive("registered", _id, %{"client-key" => client_key}, state) do
-    IO.inspect({"connected", state.client_key, client_key})
+    if client_key == state.client_key do
+      Logger.info("Connected to LGTV.")
+    else
+      KeyStore.put(state.uri, client_key)
+      Logger.info("Successfully paired with LGTV.")
+    end
 
     state =
       %State{state | socket_state: :ready, client_key: client_key}
@@ -178,7 +183,7 @@ defmodule ExLgtv.Client do
 
   # A response to our "reg0" event, indicating that confirmation is required:
   defp handle_receive("response", "reg0", %{"pairingType" => "PROMPT"}, state) do
-    IO.inspect({"prompting"})
+    Logger.warn("Pairing required.  Please accept the pairing request on your LGTV.")
     {:noreply, %State{state | socket_state: :prompting}}
   end
 
@@ -215,7 +220,7 @@ defmodule ExLgtv.Client do
   #
   defp dispatch_response(command_id, response, state) do
     {reply_to, pending} = Map.pop(state.pending, command_id)
-    IO.inspect({"response", command_id, reply_to})
+    debug({"response", command_id, reply_to})
 
     case reply_to do
       {:internal, callback} ->
@@ -258,7 +263,7 @@ defmodule ExLgtv.Client do
     end
 
     {:ok, pid} = Socket.Pointer.start_link(uri, self())
-    IO.inspect({"socketPath", uri, pid})
+    debug({"socketPath", uri, pid})
     {:noreply, %State{state | pointer_socket: pid, pointer_ready: false}}
   end
 
@@ -315,5 +320,9 @@ defmodule ExLgtv.Client do
   defp handshake_payload(client_key) when is_bitstring(client_key) do
     handshake_payload(nil)
     |> Map.put(:"client-key", client_key)
+  end
+
+  defp debug(data) do
+    inspect(data) |> Logger.debug()
   end
 end
