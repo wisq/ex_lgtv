@@ -25,16 +25,20 @@ defmodule ExLgtv.Client do
     GenServer.start_link(__MODULE__, uri)
   end
 
-  def call_command(pid, uri, payload) do
+  def command(pid, uri, payload) do
     GenServer.call(pid, {:command, uri, payload})
-  end
-
-  def call_pointer(pid, payload) do
-    GenServer.call(pid, {:pointer, payload})
   end
 
   def subscribe(pid, token, uri, payload) do
     GenServer.call(pid, {:subscribe, token, self(), uri, payload})
+  end
+
+  def button(pid, button) do
+    GenServer.call(pid, {:pointer, type: :button, name: button})
+  end
+
+  def click(pid) do
+    GenServer.call(pid, {:pointer, type: :click})
   end
 
   @impl true

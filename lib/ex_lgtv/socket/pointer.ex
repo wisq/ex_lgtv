@@ -27,8 +27,6 @@ defmodule ExLgtv.Socket.Pointer do
 
   @impl true
   def handle_cast({:send, payload}, parent) do
-    IO.inspect({__MODULE__, payload})
-
     message =
       Enum.map(payload, fn {key, value} -> "#{key}:#{value}" end)
       |> Enum.join("\n")
@@ -38,8 +36,6 @@ defmodule ExLgtv.Socket.Pointer do
 
   @impl true
   def handle_cast(:close, parent) do
-    IO.puts("closing pointer")
-
     {:close, parent}
   end
 end
