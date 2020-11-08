@@ -2,7 +2,7 @@ defmodule ExLgtv.Remote.Volume do
   alias ExLgtv.Client
 
   def get(client) do
-    Client.call_command(client, "ssap://audio/getVolume", %{})
+    Client.command(client, "ssap://audio/getVolume", %{})
   end
 
   def subscribe(client, token) do
@@ -10,14 +10,14 @@ defmodule ExLgtv.Remote.Volume do
   end
 
   def set(client, volume) do
-    Client.call_command(client, "ssap://audio/setVolume", %{volume: volume})
+    Client.command(client, "ssap://audio/setVolume", %{volume: volume})
   end
 
   def up(client) do
-    Client.call_command(client, "ssap://audio/volumeUp", %{})
+    Client.command(client, "ssap://audio/volumeUp", %{})
   end
 
   def down(client) do
-    Client.call_command(client, "ssap://audio/volumeDown", %{})
+    Client.command(client, "ssap://audio/volumeDown", %{})
   end
 end
