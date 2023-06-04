@@ -3,6 +3,8 @@ defmodule ExLgtv.Client do
   require Logger
   alias ExLgtv.{Socket, KeyStore}
 
+  @default_port 3000
+
   defmodule State do
     @enforce_keys [:uri, :socket, :socket_state, :client_key]
     defstruct(
@@ -18,11 +20,12 @@ defmodule ExLgtv.Client do
     )
   end
 
-  def start_link(ip) do
-    URI.default_port("ws", 3000)
-    uri = URI.parse("ws://#{ip}")
+  def start_link(opts) do
+    {host, opts} = Keyword.pop(opts, :host)
+    {port, opts} = Keyword.pop(opts, :port, @default_port)
+    {uri, opts} = Keyword.pop(opts, :uri, %URI{scheme: "ws", host: host, port: port})
 
-    GenServer.start_link(__MODULE__, uri)
+    GenServer.start_link(__MODULE__, parse_uri(uri), opts)
   end
 
   def command(pid, uri, payload) do
@@ -271,7 +274,7 @@ defmodule ExLgtv.Client do
       Socket.Pointer.close(state.pointer_socket)
     end
 
-    {:ok, pid} = Socket.Pointer.start_link(uri, self())
+    {:ok, pid} = Socket.Pointer.start_link(parse_uri(uri), self())
     debug({"socketPath", uri, pid})
     {:noreply, %State{state | pointer_socket: pid, pointer_ready: false}}
   end
@@ -334,4 +337,21 @@ defmodule ExLgtv.Client do
   defp debug(data) do
     inspect(data) |> Logger.debug()
   end
+
+  defp parse_uri(uri) do
+    uri
+    |> URI.parse()
+    |> fix_ws_port()
+  end
+
+  defp fix_ws_port(%URI{scheme: "ws"} = uri) do
+    if uri.port == URI.default_port("ws") do
+      # This avoids having to globally set `URI.default_port("ws", @default_port)`.
+      %URI{uri | port: @default_port}
+    else
+      uri
+    end
+  end
+
+  defp fix_ws_port(%URI{} = uri), do: uri
 end

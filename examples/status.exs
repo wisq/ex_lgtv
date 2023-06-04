@@ -42,7 +42,7 @@ defmodule LgtvStatus do
   def main(args) do
     {ip, actions} = parse_args(args)
 
-    {:ok, pid} = Client.start_link(ip)
+    {:ok, pid} = Client.start_link(host: ip)
     # Try clicking until we get a solid connection.
     # TODO: Some sort of waiting on the client itself.
     wait_click(pid)
