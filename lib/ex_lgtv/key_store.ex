@@ -26,7 +26,8 @@ defmodule ExLgtv.KeyStore do
   defp path(uri) do
     Path.join([
       System.user_home!(),
-      ".ex_lgtv",
+      ".config",
+      "ex_lgtv",
       "keys",
       "#{sanitise(uri.host)}:#{uri.port}"
     ])
