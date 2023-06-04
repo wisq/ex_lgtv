@@ -41,6 +41,11 @@ defmodule ExLgtv.Client do
     GenServer.call(pid, {:pointer, type: :click})
   end
 
+  def move(pid, dx, dy, drag \\ false) do
+    drag_n = if drag, do: 1, else: 0
+    GenServer.call(pid, {:pointer, type: :move, dx: dx, dy: dy, drag: drag_n})
+  end
+
   @impl true
   def init(uri) do
     Logger.info("Connecting to LGTV at #{uri} ...")
