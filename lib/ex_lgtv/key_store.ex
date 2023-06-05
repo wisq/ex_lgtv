@@ -10,11 +10,11 @@ defmodule ExLgtv.KeyStore do
     GenServer.start_link(__MODULE__, mode, opts)
   end
 
-  def get(uri) do
+  def get(%URI{} = uri) do
     GenServer.call(__MODULE__, {:get, uri})
   end
 
-  def put(uri, key) do
+  def put(%URI{} = uri, key) do
     GenServer.cast(__MODULE__, {:put, uri, key})
   end
 
@@ -48,7 +48,7 @@ defmodule ExLgtv.KeyStore do
   end
 
   defp get_key(:memory, uri, state) do
-    {:reply, Map.get(state.store, uri), state}
+    {:reply, Map.get(state.store, {uri.host, uri.port}), state}
   end
 
   defp get_key({:file, dir}, uri, state) do
@@ -66,7 +66,7 @@ defmodule ExLgtv.KeyStore do
   end
 
   defp put_key(:memory, uri, key, state) do
-    {:noreply, %State{state | store: Map.put(state.store, uri, key)}}
+    {:noreply, %State{state | store: Map.put(state.store, {uri.host, uri.port}, key)}}
   end
 
   defp put_key({:file, dir}, uri, key, state) do
