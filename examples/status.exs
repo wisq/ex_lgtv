@@ -2,13 +2,13 @@
 # This example script will move the cursor to bring up the "current input" bar,
 # then click on it to show extended status (e.g. video resolution, audio encoding).
 #
-# It will then jiggle the pointer every second to keep that status bar visible
-# until it receives a newline on standard input, at which point it will press
-# the "back" button to dismiss the status bar.
+# It will then jiggle the pointer to keep that status bar visible as long as
+# possible, until it receives a newline on standard input, at which point it
+# will press the "back" button to dismiss the status bar.
 #
 
 defmodule LgtvStatus do
-  alias ExLgtv.Client
+  alias ExLgtv.{Client, Pointer}
 
   # Minimum delay between events, such as movements.
   # 50ms (20/sec) seems like a safe value.
@@ -42,22 +42,24 @@ defmodule LgtvStatus do
   def main(args) do
     {ip, actions} = parse_args(args)
 
-    {:ok, pid} = Client.start_link(host: ip)
-    # Try clicking until we get a solid connection.
-    # TODO: Some sort of waiting on the client itself.
-    wait_click(pid)
+    {:ok, client} = Client.start_link(host: ip)
+    {:ok, pointer} = Pointer.start_link(client: client)
+    Pointer.wait_for_ready(pointer)
+    Pointer.click(pointer)
 
-    Enum.each(actions, &do_action(pid, &1))
+    Enum.each(actions, &do_action(pointer, &1))
     IO.puts("Status display activated.\nPress enter to close ...")
 
     # Receive a :done event when we get a newline from standard input.
     stdin_wait()
     # Repeatedly move the cursor to prevent the status screen from timing out.
     # Finish when we get the :done event.
-    idle_loop(pid)
+    idle_loop(pointer)
 
     IO.puts("Status display dismissed.")
-    Client.button(pid, 'BACK')
+    Pointer.button(pointer, :BACK)
+    # Allow enough time for pointer socket to send last message.
+    Process.sleep(100)
   end
 
   def parse_args(args) do
@@ -82,17 +84,6 @@ defmodule LgtvStatus do
   defp select_position([_p | _rest] = sel) do
     stderr("Too many positions selected: #{inspect(sel)}")
     usage()
-  end
-
-  defp wait_click(pid) do
-    case Client.click(pid) do
-      {:error, :pointer_not_ready} ->
-        Process.sleep(50)
-        wait_click(pid)
-
-      {:ok, _} ->
-        :ok
-    end
   end
 
   defp stderr(msg) do
@@ -123,17 +114,17 @@ defmodule LgtvStatus do
 
   defp do_action(pid, :click) do
     Process.sleep(@delay)
-    Client.click(pid)
+    Pointer.click(pid)
   end
 
   defp do_action(pid, {1, {dx, dy}}) do
     Process.sleep(@delay)
-    Client.move(pid, dx, dy)
+    Pointer.move(pid, dx, dy)
   end
 
   defp do_action(pid, {count, {dx, dy}}) do
     Process.sleep(@delay)
-    Client.move(pid, dx, dy)
+    Pointer.move(pid, dx, dy)
     do_action(pid, {count - 1, {dx, dy}})
   end
 
@@ -150,9 +141,9 @@ defmodule LgtvStatus do
     receive do
       :done -> :ok
     after
-      1000 ->
+      100 ->
         d = if positive, do: 1, else: -1
-        Client.move(pid, d, d)
+        Pointer.move(pid, d, d)
         idle_loop(pid, !positive)
     end
   end
