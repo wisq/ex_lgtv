@@ -22,8 +22,9 @@ defmodule ExLgtv.Client do
     {host, opts} = Keyword.pop(opts, :host)
     {port, opts} = Keyword.pop(opts, :port, @default_port)
     {uri, opts} = Keyword.pop(opts, :uri, %URI{scheme: "ws", host: host, port: port})
+    {key, opts} = Keyword.pop(opts, :client_key)
 
-    GenStage.start_link(__MODULE__, parse_uri(uri), opts)
+    GenStage.start_link(__MODULE__, {parse_uri(uri), key}, opts)
   end
 
   def command(pid, uri, payload) do
@@ -35,7 +36,7 @@ defmodule ExLgtv.Client do
   end
 
   @impl true
-  def init(%URI{} = uri) do
+  def init({%URI{} = uri, client_key}) do
     Logger.info("Connecting to LGTV at #{uri} ...")
     {:ok, socket} = Socket.Main.start_link(uri, self())
 
@@ -43,7 +44,7 @@ defmodule ExLgtv.Client do
      %State{
        uri: uri,
        socket: socket,
-       client_key: KeyStore.get(uri)
+       client_key: client_key || KeyStore.get(uri)
      }}
   end
 
