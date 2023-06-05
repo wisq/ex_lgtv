@@ -30,6 +30,7 @@ defmodule ExLgtv.MixProject do
       # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"},
       {:websockex, "~> 0.4.0"},
       {:poison, "~> 3.1"},
+      {:gen_stage, "~> 1.0"},
       {:test_server, "~> 0.1", only: :test},
       {:bandit, "~> 1.0-pre", only: :test},
       {:mix_test_watch, "~> 1.0", only: :dev, runtime: false},

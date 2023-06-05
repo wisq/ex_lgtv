@@ -1,22 +1,20 @@
 defmodule ExLgtv.Client do
-  use GenServer
+  use GenStage
   require Logger
   alias ExLgtv.{Socket, KeyStore}
 
   @default_port 3000
 
   defmodule State do
-    @enforce_keys [:uri, :socket, :socket_state, :client_key]
+    @enforce_keys [:uri, :client_key, :socket]
     defstruct(
       uri: nil,
-      socket: nil,
-      socket_state: nil,
-      pointer_socket: nil,
-      pointer_ready: false,
       client_key: nil,
+      socket: nil,
+      ready: false,
       command_id: 1,
-      subscribers: MapSet.new(),
-      pending: %{}
+      pending_commands: :queue.new(),
+      pending_replies: %{}
     )
   end
 
@@ -25,151 +23,108 @@ defmodule ExLgtv.Client do
     {port, opts} = Keyword.pop(opts, :port, @default_port)
     {uri, opts} = Keyword.pop(opts, :uri, %URI{scheme: "ws", host: host, port: port})
 
-    GenServer.start_link(__MODULE__, parse_uri(uri), opts)
+    GenStage.start_link(__MODULE__, parse_uri(uri), opts)
   end
 
   def command(pid, uri, payload) do
-    GenServer.call(pid, {:command, uri, payload})
+    GenStage.call(pid, {:command, uri, payload})
   end
 
   def subscribe(pid, token, uri, payload) do
-    GenServer.call(pid, {:subscribe, token, self(), uri, payload})
-  end
-
-  def button(pid, button) do
-    GenServer.call(pid, {:pointer, type: :button, name: button})
-  end
-
-  def click(pid) do
-    GenServer.call(pid, {:pointer, type: :click})
-  end
-
-  def move(pid, dx, dy, drag \\ false) do
-    drag_n = if drag, do: 1, else: 0
-    GenServer.call(pid, {:pointer, type: :move, dx: dx, dy: dy, drag: drag_n})
+    GenStage.call(pid, {:subscribe, token, uri, payload})
   end
 
   @impl true
-  def init(uri) do
+  def init(%URI{} = uri) do
     Logger.info("Connecting to LGTV at #{uri} ...")
     {:ok, socket} = Socket.Main.start_link(uri, self())
 
-    {:ok,
+    {:producer,
      %State{
        uri: uri,
        socket: socket,
-       socket_state: :connecting,
        client_key: KeyStore.get(uri)
      }}
   end
 
   @impl true
   def handle_call({:command, uri, payload}, from, state) do
-    case send_main(:request, state, uri, payload, {:reply, from}) do
-      {:ok, new_state} -> {:noreply, new_state}
-      {:error, error} -> {:reply, {:error, error}, state}
-    end
+    {:noreply, [], send_command(:request, state, uri, payload, {:reply, from})}
   end
 
   @impl true
-  def handle_call({:subscribe, token, pid, uri, payload}, from, state) do
-    case send_main(:subscribe, state, uri, payload, {:subscription, token, pid, from}) do
-      {:ok, new_state} -> {:noreply, new_state}
-      {:error, error} -> {:reply, {:error, error}, state}
-    end
+  def handle_call({:subscribe, token, uri, payload}, from, state) do
+    {:noreply, [], send_command(:subscribe, state, uri, payload, {:subscription, token, from})}
   end
 
   @impl true
-  def handle_call({:pointer, payload}, _from, state) do
-    {:reply, send_pointer(state, payload), state}
-  end
-
-  @impl true
-  def handle_info({:socket_connect, pid}, state) do
-    ^pid = state.socket
+  def handle_info({:socket_connect, pid}, %State{socket: pid} = state) do
     Socket.Main.register(state.socket, "reg0", handshake_payload(state.client_key))
-    {:noreply, %State{state | socket_state: :registering}}
+    {:noreply, [], state}
   end
 
   @impl true
-  def handle_info({:socket_disconnect, pid}, state) do
-    ^pid = state.socket
-    {:noreply, %State{state | socket_state: :offline}}
+  def handle_info({:socket_disconnect, pid}, %State{socket: pid} = state) do
+    {:noreply, [], %State{state | ready: false}}
   end
 
   @impl true
-  def handle_info({:pointer_connect, pid}, state) do
-    if pid == state.pointer_socket do
-      Logger.info("Pointer socket connected.")
-      {:noreply, %State{state | pointer_ready: true}}
-    else
-      {:noreply, state}
-    end
-  end
-
-  @impl true
-  def handle_info({:pointer_disconnect, pid}, state) do
-    if pid == state.pointer_socket do
-      Logger.info("Lost connection to pointer socket.")
-      {:noreply, %State{state | pointer_ready: false}}
-    else
-      {:noreply, state}
-    end
-  end
-
-  @impl true
-  def handle_info({:socket_receive, pid, type, id, payload}, state) do
-    ^pid = state.socket
+  def handle_info({:socket_receive, pid, type, id, payload}, %State{socket: pid} = state) do
     handle_receive(type, id, payload, state)
+  end
+
+  @impl true
+  def handle_info(:send_pending_commands, state) do
+    state =
+      state.pending_commands
+      |> :queue.to_list()
+      |> Enum.reduce(%State{state | pending_commands: :queue.new()}, fn
+        {mode, uri, payload, reply_to}, st ->
+          send_command(mode, st, uri, payload, reply_to)
+      end)
+
+    {:noreply, [], state}
+  end
+
+  @impl true
+  def handle_demand(_demand, state) do
+    {:noreply, [], state}
   end
 
   # Send a request to the main socket.
   # This generates and registers a new command ID, then sends it.
-  defp send_main(mode, %State{socket_state: :ready} = state, uri, payload, reply_to) do
-    {command_id, state} = register_next_command_id(state, reply_to)
+  defp send_command(mode, %State{ready: true} = state, uri, payload, reply_to) do
+    {command_id, state} = next_command_id(state)
 
     case mode do
       :request -> Socket.Main.request(state.socket, command_id, uri, payload)
       :subscribe -> Socket.Main.subscribe(state.socket, command_id, uri, payload)
     end
 
-    {:ok, state}
+    register_reply(state, command_id, reply_to)
   end
 
-  # If the socket isn't ready, return an error immediately,
-  # without registering anything.
-  defp send_main(_mode, %State{socket_state: ss}, _uri, _payload, _reply_to) do
-    {:error, "Socket state is #{inspect(ss)}"}
-  end
-
-  # Send a pointer event, on the separate pointer socket.
-  defp send_pointer(state, payload) do
-    if state.pointer_ready do
-      Socket.Pointer.cast(state.pointer_socket, payload)
-      {:ok, nil}
-    else
-      {:error, :pointer_not_ready}
-    end
+  # Buffers a command to send once connected.
+  defp send_command(mode, %State{ready: false} = state, uri, payload, reply_to) do
+    cmd = {mode, uri, payload, reply_to}
+    %State{state | pending_commands: :queue.in(cmd, state.pending_commands)}
   end
 
   # Pick the next command ID, then increment it.
-  # Stick the reply_to into state.pending.
-  defp register_next_command_id(state, reply_to) do
+  defp next_command_id(state) do
     id = state.command_id
-    pending = Map.put(state.pending, id, reply_to)
-    state = %State{state | command_id: id + 1, pending: pending}
+    state = %State{state | command_id: id + 1}
     {id, state}
+  end
+
+  # Stick the reply_to into state.pending_replies.
+  defp register_reply(state, command_id, reply_to) do
+    %State{state | pending_replies: Map.put(state.pending_replies, command_id, reply_to)}
   end
 
   # Dispatch an internal command, with a callback to process the result.
   defp internal_command(state, uri, payload, callback) do
-    send_main(:request, state, uri, payload, {:internal, callback})
-  end
-
-  # Bang version, to make for easier pipelining.
-  defp internal_command!(state, uri, payload \\ %{}, callback) do
-    {:ok, state} = internal_command(state, uri, payload, callback)
-    state
+    send_command(:request, state, uri, payload, {:internal, callback})
   end
 
   # Handle various types of messages received over the socket.
@@ -183,20 +138,14 @@ defmodule ExLgtv.Client do
       Logger.info("Successfully paired with LGTV.")
     end
 
-    state =
-      %State{state | socket_state: :ready, client_key: client_key}
-      |> internal_command!(
-        "ssap://com.webos.service.networkinput/getPointerInputSocket",
-        &handle_pointer_socket/2
-      )
-
-    {:noreply, state}
+    send(self(), :send_pending_commands)
+    {:noreply, [], %State{state | ready: true, client_key: client_key}}
   end
 
   # A response to our "reg0" event, indicating that confirmation is required:
   defp handle_receive("response", "reg0", %{"pairingType" => "PROMPT"}, state) do
     Logger.warn("Pairing required.  Please accept the pairing request on your LGTV.")
-    {:noreply, %State{state | socket_state: :prompting}}
+    {:noreply, [], state}
   end
 
   # A positive response to a standard command:
@@ -217,22 +166,20 @@ defmodule ExLgtv.Client do
   # {:internal, callback} ->
   #   A response to a special command internal to this module.
   #   `callback` is a function that accepts the response.
-  #   It should return a `{:noreply, state}` return value directly.
+  #   It should return a `{:noreply, [event], state}` return value directly.
   #
   # {:reply, from} ->
   #   A standard `call`-style command.
-  #   We use `GenServer.reply` to reply to `from`.
+  #   We use `GenStage.reply` to reply to `from`.
   #
-  # {:subscription, token, pid} ->
-  #   An ongoing subscription.  Send `{token, payload}` to `pid`.
-  #
-  # {:subscription, token, pid, from} ->
-  #   A new subscription.  In addition to the above behaviour,
-  #   also use `GenServer.reply`, then remove `from`.
+  # {:subscription, token, from} ->
+  #   An ongoing subscription.  Send `{token, payload}` as an event.
+  #   If `from` is not nil, do a `GenStage.reply` to forward the initial response,
+  #   then set `from` to nil in the corresponding `pending_replies` entry.
   #
   defp dispatch_response(command_id, response, state) do
-    {reply_to, pending} = Map.pop(state.pending, command_id)
-    debug({"response", command_id, reply_to})
+    {reply_to, pending} = Map.pop!(state.pending_replies, command_id)
+    debug({:response, command_id, reply_to})
 
     case reply_to do
       {:internal, callback} ->
@@ -241,42 +188,28 @@ defmodule ExLgtv.Client do
 
       {:reply, from} ->
         # External command: Reply, and drop from state.pending.
-        GenServer.reply(from, response)
-        {:noreply, %State{state | pending: pending}}
+        GenStage.reply(from, response)
+        {:noreply, [], %State{state | pending_replies: pending}}
 
-      {:subscription, token, pid} ->
-        # Ongoing subscription: Send to target, leave state.pending unchanged.
-        if {:ok, payload} = response do
-          send(pid, {token, payload})
-        end
-
-        {:noreply, state}
-
-      {:subscription, token, pid, from} ->
-        # New subscription: Send to target ...
-        if {:ok, payload} = response do
-          send(pid, {token, payload})
-        end
-
-        # ... reply once to satisfy the call ...
-        GenServer.reply(from, response)
-        # ... then switch to an "ongoing" subscription, above.
-        pending = Map.put(pending, command_id, {:subscription, token, pid})
-        {:noreply, %State{state | pending: pending}}
+      {:subscription, token, from} ->
+        # Subscription: Forward as an event, and possibly reply as well.
+        handle_subscription(command_id, from, token, response, state)
     end
   end
 
-  # Internal callback for a `getPointerInputSocket` call.
-  # This sets up the pointer socket once we have a URI for it.
-  # Issued once registration is complete.
-  defp handle_pointer_socket({:ok, %{"socketPath" => uri}}, state) do
-    if state.pointer_socket do
-      Socket.Pointer.close(state.pointer_socket)
-    end
+  defp handle_subscription(_, nil, token, {:ok, payload}, state) do
+    {:noreply, [{token, payload}], state}
+  end
 
-    {:ok, pid} = Socket.Pointer.start_link(parse_uri(uri), self())
-    debug({"socketPath", uri, pid})
-    {:noreply, %State{state | pointer_socket: pid, pointer_ready: false}}
+  defp handle_subscription(_, nil, _token, {:error, _}, state) do
+    {:noreply, [], state}
+  end
+
+  defp handle_subscription(command_id, from, token, response, state) do
+    GenStage.reply(from, response)
+    pending = Map.put(state.pending_replies, command_id, {:subscription, token, nil})
+    state = %State{state | pending_replies: pending}
+    handle_subscription(command_id, nil, token, response, state)
   end
 
   # Generate the initial handshake payload.
@@ -329,7 +262,7 @@ defmodule ExLgtv.Client do
   end
 
   # This version adds an existing client key to the handshake:
-  defp handshake_payload(client_key) when is_bitstring(client_key) do
+  defp handshake_payload(client_key) when is_binary(client_key) do
     handshake_payload(nil)
     |> Map.put(:"client-key", client_key)
   end
