@@ -272,7 +272,7 @@ defmodule ExLgtv.Client do
     inspect(data) |> Logger.debug()
   end
 
-  defp parse_uri(uri) do
+  def parse_uri(uri) do
     uri
     |> URI.parse()
     |> fix_ws_port()
