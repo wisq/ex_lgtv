@@ -61,7 +61,7 @@ defmodule ExLgtv.PointerTest do
     delay = Map.get(ctx, :socket_startup_delay, 0)
     path = "/resources/#{random_hex(40)}/netinput.pointer.sock"
     {:ok, server} = TestServer.websocket_init(path, match: fn _ -> Process.sleep(delay) end)
-    uri = TestServer.url(path) |> URI.parse() |> Map.put(:scheme, "ws") |> URI.to_string()
+    uri = TestServer.url(path)
     [server: server, pointer_uri: uri]
   end
 
