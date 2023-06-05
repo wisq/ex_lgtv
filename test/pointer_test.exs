@@ -82,7 +82,7 @@ defmodule ExLgtv.PointerTest do
     [pointer: pointer]
   end
 
-  defp expect(server, text, msg \\ nil) do
+  defp expect(server, text, msg) do
     me = self()
 
     fun = fn {:text, ^text}, state ->

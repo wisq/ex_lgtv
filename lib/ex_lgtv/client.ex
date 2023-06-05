@@ -123,11 +123,6 @@ defmodule ExLgtv.Client do
     %State{state | pending_replies: Map.put(state.pending_replies, command_id, reply_to)}
   end
 
-  # Dispatch an internal command, with a callback to process the result.
-  defp internal_command(state, uri, payload, callback) do
-    send_command(:request, state, uri, payload, {:internal, callback})
-  end
-
   # Handle various types of messages received over the socket.
   #
   # The initial registration event, once pairing is complete:
@@ -162,12 +157,7 @@ defmodule ExLgtv.Client do
   # Determine who a response should be sent to,
   # then send it to them.
   #
-  # There are currently four different types:
-  #
-  # {:internal, callback} ->
-  #   A response to a special command internal to this module.
-  #   `callback` is a function that accepts the response.
-  #   It should return a `{:noreply, [event], state}` return value directly.
+  # There are currently two different types:
   #
   # {:reply, from} ->
   #   A standard `call`-style command.
@@ -183,10 +173,6 @@ defmodule ExLgtv.Client do
     debug({:response, command_id, reply_to})
 
     case reply_to do
-      {:internal, callback} ->
-        # Internal command: Run the callback, leave state.pending unchanged.
-        callback.(response, state)
-
       {:reply, from} ->
         # External command: Reply, and drop from state.pending.
         GenStage.reply(from, response)

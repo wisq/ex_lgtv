@@ -4,8 +4,6 @@ defmodule ExLgtv.Pointer do
 
   alias ExLgtv.{Socket, Client}
 
-  @default_port 3000
-
   defmodule State do
     @enforce_keys [:client]
     defstruct(

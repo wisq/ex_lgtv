@@ -1,5 +1,6 @@
 defmodule ExLgtv.ClientTest do
   use ExUnit.Case, async: true
+  import ExUnit.CaptureLog
 
   alias ExLgtv.{Client, KeyStore}
 
@@ -53,13 +54,18 @@ defmodule ExLgtv.ClientTest do
 
     KeyStore.put(uri, key)
 
-    {:ok, _} = Client.start_link(uri: uri)
-    assert_receive {:waiting, reg_id}, 500
+    log =
+      capture_log(fn ->
+        {:ok, _} = Client.start_link(uri: uri)
+        assert_receive {:waiting, reg_id}, 500
+        reply(server, :registered, reg_id, %{"client-key" => key})
 
-    reply(server, :registered, reg_id, %{"client-key" => key})
-    # Avoid race condition
-    # TODO: set up a consumer and assert on a "ready" event instead
-    Process.sleep(500)
+        # Allow enough time for logging & saving to KeyStore.
+        # TODO: set up a consumer and assert on a "ready" event instead
+        Process.sleep(500)
+      end)
+
+    assert log =~ "Pairing required"
     assert KeyStore.get(uri) == key
   end
 
