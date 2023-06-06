@@ -15,7 +15,7 @@ defmodule ExLgtv.PointerTest do
 
   describe "init with long connect delay" do
     setup do
-      [socket_startup_delay: 500]
+      [socket_startup_delay: 200]
     end
 
     setup [:test_server, :mock_client]
@@ -54,6 +54,12 @@ defmodule ExLgtv.PointerTest do
       expect(server, "type:click\n\n", :click)
       Pointer.click(pointer)
       assert_receive :click
+    end
+
+    test "sends button events", %{pointer: pointer, server: server} do
+      expect(server, "type:button\nname:BACK\n\n", :back)
+      Pointer.button(pointer, "BACK")
+      assert_receive :back
     end
   end
 
